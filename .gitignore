@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Sandboxy logs & outputs
+*.json
+*.log
+sandbox_output.log
+sandboxy_raw.json
+sandboxy_summary.json
+run_http.json
+run_https.json
+demo_raw.json
+demo_summary.json
+local_attempts.json
+shell_traffic.json
+local_attempts_analysis.txt
+shell_traffic_analysis.txt
+firefox_traffic_analysis.txt
