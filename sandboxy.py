@@ -298,10 +298,22 @@ def detect_active_interface():
             pass
     return None
 
+def pre_clean_resources():
+    """Silently cleans up any conflicting leftover network namespace resources."""
+    # Delete netns if left over
+    run_cmd(f"ip netns delete {NS_NAME}", check=False)
+    # Delete veth_host if left over on the host
+    run_cmd(f"ip link delete {VETH_HOST}", check=False)
+    # Delete config directory if left over
+    run_cmd(f"rm -rf /etc/netns/{NS_NAME}", check=False)
+
 def setup_network(offline=False):
     global cleanup_needed, active_interface, offline_mode
     offline_mode = offline
     print(f"{C_BOLD}{C_BLUE}[*] Setting up network namespace: {NS_NAME}{C_RESET}")
+    
+    # Pre-clean leftover resources to avoid collision failures
+    pre_clean_resources()
     
     # 1. Create network namespace
     run_cmd(f"ip netns add {NS_NAME}")
