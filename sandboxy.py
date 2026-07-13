@@ -61,6 +61,10 @@ stats = {"packets": 0, "dns": 0, "tls": 0, "http": 0, "tcp": 0, "udp": 0}
 latest_events = []
 all_raw_events = []
 
+# Live Sandboxed App console output buffer
+output_lock = threading.Lock()
+app_output_lines = []
+
 # Logging handles and files
 raw_log_handle = None
 raw_log_path = None
@@ -72,11 +76,13 @@ def clear_screen():
     sys.stdout.flush()
 
 def reset_stats():
-    global stats, latest_events, all_raw_events
+    global stats, latest_events, all_raw_events, app_output_lines
     with list_lock:
         stats = {"packets": 0, "dns": 0, "tls": 0, "http": 0, "tcp": 0, "udp": 0}
         latest_events = []
         all_raw_events = []
+    with output_lock:
+        app_output_lines = []
 
 def log_event(event_type, source_ip, source_port, dest_ip, dest_port, message, extra=None):
     timestamp = datetime.now().isoformat()
@@ -838,6 +844,47 @@ def tui_get_bool(prompt, default_val=True):
         return default_val
     return res.lower().startswith('y')
 
+def get_namespace_pids(ns_name):
+    """Discovers all PIDs currently running inside the given network namespace."""
+    try:
+        res = subprocess.run(["ip", "netns", "pids", ns_name], capture_output=True, text=True)
+        if res.returncode == 0:
+            return [int(pid) for pid in res.stdout.split() if pid.isdigit()]
+    except Exception:
+        pass
+    return []
+
+def read_app_output(stream, log_file=None):
+    """Background thread to read sandboxed process stdout/stderr line-by-line,
+    mirroring to log_file if selected, and maintaining a rolling console buffer.
+    """
+    global app_output_lines
+    f_log = None
+    if log_file:
+        try:
+            f_log = open(log_file, "w", encoding="utf-8")
+        except Exception:
+            pass
+            
+    try:
+        for line in stream:
+            line_clean = line.rstrip('\n')
+            with output_lock:
+                app_output_lines.append(line_clean)
+                if len(app_output_lines) > 10:
+                    app_output_lines.pop(0)
+            if f_log:
+                f_log.write(line)
+                f_log.flush()
+    except Exception:
+        pass
+    finally:
+        if f_log:
+            try:
+                f_log.close()
+            except Exception:
+                pass
+
 def show_tui():
     global tui_active
     tui_active = True
@@ -846,22 +893,23 @@ def show_tui():
         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
         print(f"{C_BOLD}{C_GREEN}    S A N D B O X Y  -  I s o l a t e d   P a c k e t   M o n i t o r{C_RESET}")
         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
-        print(f"  {C_BOLD}{C_WHITE}[1]{C_RESET} Run Command in Network Sandbox")
-        print(f"  {C_BOLD}{C_WHITE}[2]{C_RESET} Open Interactive Sandbox Shell")
-        print(f"  {C_BOLD}{C_WHITE}[3]{C_RESET} Analyze / View Existing Log File")
-        print(f"  {C_BOLD}{C_WHITE}[4]{C_RESET} Exit")
+        print(f"  {C_BOLD}{C_WHITE}[1]{C_RESET} Run Command in Network Sandbox (Wait for Main Process)")
+        print(f"  {C_BOLD}{C_WHITE}[2]{C_RESET} Run Command in Network Sandbox (Track Background/Daemon)")
+        print(f"  {C_BOLD}{C_WHITE}[3]{C_RESET} Open Interactive Sandbox Shell")
+        print(f"  {C_BOLD}{C_WHITE}[4]{C_RESET} Analyze / View Existing Log File")
+        print(f"  {C_BOLD}{C_WHITE}[5]{C_RESET} Exit")
         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
         
-        choice = tui_get_input("Choose Option (1-4)", "1")
-        if choice is None or choice == "4":
+        choice = tui_get_input("Choose Option (1-5)", "1")
+        if choice is None or choice == "5":
             print("\nExiting Sandboxy. Goodbye!")
             break
             
-        if choice not in ("1", "2", "3"):
+        if choice not in ("1", "2", "3", "4"):
             input(f"\n{C_RED}[!] Invalid Choice. Press Enter to retry...{C_RESET}")
             continue
 
-        if choice == "3":
+        if choice == "4":
             # Analyze existing log
             log_to_read = tui_get_input("Enter log file path (e.g. run_http.json)")
             if log_to_read:
@@ -870,8 +918,9 @@ def show_tui():
                 input(f"{C_BOLD}{C_WHITE}Press Enter to return to menu...{C_RESET}")
             continue
 
-        # Option 1 or 2: Configuring Sandbox network session
-        is_shell = (choice == "2")
+        # Option 1, 2 or 3: Configuring Sandbox network session
+        is_shell = (choice == "3")
+        is_daemon_mode = (choice == "2")
         cmd_to_run = None
         if not is_shell:
             cmd_to_run = tui_get_input("Enter command to execute (e.g., 'curl -I http://google.com')")
@@ -900,6 +949,14 @@ def show_tui():
         if log_summary:
             summary_log_path = tui_get_input("Summary report filename", "sandboxy_summary.json")
             if not summary_log_path: continue
+
+        # App console output logging configuration
+        log_app_out = tui_get_bool("Enable Sandboxed App console output logging?", True)
+        if log_app_out is None: continue
+        app_log_path = None
+        if log_app_out:
+            app_log_path = tui_get_input("App console log filename", "sandbox_output.log")
+            if not app_log_path: continue
 
         # Begin Sandbox execution
         reset_stats()
@@ -951,9 +1008,16 @@ def show_tui():
                 else:
                     exec_cmd = f"ip netns exec {NS_NAME} {env_prefix}{cmd_to_run}"
 
-                # Redirect output so dashboard stays clean
-                out_log = open("sandbox_output.log", "w", encoding="utf-8")
-                p = subprocess.Popen(exec_cmd, shell=True, stdout=out_log, stderr=out_log)
+                # Spawn child command merging stderr to stdout, capturing stream dynamically
+                p = subprocess.Popen(exec_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+                # Start background thread to capture stdout/stderr in-memory and write to log file if chosen
+                t_reader = threading.Thread(target=read_app_output, args=(p.stdout, app_log_path), daemon=True)
+                t_reader.start()
+
+                # If tracking daemon processes, sleep briefly to let the main process initialize and fork
+                if is_daemon_mode:
+                    time.sleep(1.5)
 
                 # Dashboard refresh loop
                 net_mode = "OFFLINE" if is_offline else f"ONLINE (NAT via {active_interface or 'host'})"
@@ -962,14 +1026,28 @@ def show_tui():
                     sys.stdout.write("\033[?25l")
                     sys.stdout.flush()
                     
-                    while p.poll() is None:
+                    while True:
+                        ns_pids = get_namespace_pids(NS_NAME)
+                        if is_daemon_mode:
+                            still_running = (p.poll() is None) or bool(ns_pids)
+                        else:
+                            still_running = (p.poll() is None)
+                            
+                        if not still_running:
+                            break
+
                         # Draw Live TUI Dashboard
                         clear_screen()
                         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
                         print(f"{C_BOLD}{C_GREEN}                   SANDBOXY LIVE TRAFFIC MONITOR{C_RESET}")
                         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
                         print(f" Command: {C_BOLD}{C_WHITE}{cmd_to_run}{C_RESET}")
-                        print(f" Status:  {C_GREEN}RUNNING (PID: {p.pid}){C_RESET}       Mode: {C_YELLOW}{net_mode}{C_RESET}")
+                        
+                        if is_daemon_mode and p.poll() is not None:
+                            status_str = f"{C_GREEN}TRACKING DAEMONS (Active PIDs: {len(ns_pids)}){C_RESET}"
+                        else:
+                            status_str = f"{C_GREEN}RUNNING (PID: {p.pid}){C_RESET}"
+                        print(f" Status:  {status_str:<45} Mode: {C_YELLOW}{net_mode}{C_RESET}")
                         print(f"{C_BOLD}{C_CYAN}----------------------------------------------------------------------{C_RESET}")
                         
                         with list_lock:
@@ -982,32 +1060,54 @@ def show_tui():
                         print(f"{C_BOLD}{C_CYAN}----------------------------------------------------------------------{C_RESET}")
                         print(f" Latest Intercepted Events:")
                         
-                        # Print latest events
+                        # Print latest network events
                         for ev in curr_events[-8:]:
                             print(f"  {ev}")
                         for _ in range(8 - len(curr_events[-8:])):
                             print()
                             
+                        print(f"{C_BOLD}{C_CYAN}----------------------------------------------------------------------{C_RESET}")
+                        print(f" Latest App Console Output:")
+                        
+                        # Print latest sandboxed application console outputs
+                        with output_lock:
+                            curr_app_out = list(app_output_lines)
+                        for line in curr_app_out[-5:]:
+                            print(f"  {line}")
+                        for _ in range(5 - len(curr_app_out[-5:])):
+                            print()
+                            
                         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
-                        print(f" Output redirected to: sandbox_output.log")
+                        if app_log_path:
+                            print(f" Output saved to: {app_log_path}")
+                        else:
+                            print(f" Output not saved to disk (in-memory preview only)")
                         print(f" Press Ctrl+C to terminate sandboxed process.")
                         sys.stdout.flush()
                         time.sleep(0.2)
                 except KeyboardInterrupt:
-                    print(f"\n{C_RED}[!] Force terminating active command...{C_RESET}")
-                    p.terminate()
-                    p.wait()
+                    print(f"\n{C_RED}[!] Force terminating active command and all background processes...{C_RESET}")
+                    try:
+                        p.terminate()
+                        p.wait()
+                    except Exception:
+                        pass
+                    # Terminate remaining processes in namespace
+                    for pid in get_namespace_pids(NS_NAME):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except Exception:
+                            pass
                 finally:
                     # Restore terminal cursor visibility
                     sys.stdout.write("\033[?25h")
                     sys.stdout.flush()
-                    out_log.close()
                     # Cure staircase effect and restore terminal settings after command finishes
                     subprocess.run("stty sane", shell=True)
 
-            # Tear down monitoring threads
-            stop_event.set()
-            sniffer_thread.join(timeout=1.5)
+                # Tear down monitoring threads
+                stop_event.set()
+                sniffer_thread.join(timeout=1.5)
             
             # Close raw log if active
             if raw_log_handle:
