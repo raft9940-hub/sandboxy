@@ -1244,17 +1244,22 @@ def main():
 
     check_requirements()
 
-    global raw_log_path, raw_log_handle, show_traffic_cli
+    global raw_log_path, raw_log_handle, show_traffic_cli, summary_log_path
     show_traffic_cli = args.show_traffic
 
     if args.log:
         raw_log_path = args.log
-        try:
-            raw_log_handle = open(raw_log_path, "w", encoding="utf-8")
-            print(f"{C_BLUE}[*] Writing JSON log events to: {raw_log_path}{C_RESET}")
-        except Exception as e:
-            print(f"{C_BOLD}{C_RED}[!] Error opening log file: {e}{C_RESET}")
-            sys.exit(1)
+    else:
+        raw_log_path = "sandboxy_raw.json"
+        
+    summary_log_path = "sandboxy_summary.json"
+
+    try:
+        raw_log_handle = open(raw_log_path, "w", encoding="utf-8")
+        print(f"{C_BLUE}[*] Writing JSON log events to: {raw_log_path}{C_RESET}")
+    except Exception as e:
+        print(f"{C_BOLD}{C_RED}[!] Error opening log file: {e}{C_RESET}")
+        sys.exit(1)
 
     signal.signal(signal.SIGTERM, handle_sigint)
 
@@ -1314,6 +1319,15 @@ def main():
         if sniffer_thread is not None:
             sniffer_thread.join(timeout=2)
 
+        # Close raw log to flush it cleanly
+        if raw_log_handle:
+            raw_log_handle.close()
+            raw_log_handle = None
+            print(f"{C_GREEN}[+] Raw JSON log written to: {raw_log_path}{C_RESET}")
+
+        if summary_log_path:
+            compile_and_write_summary()
+
     except KeyboardInterrupt:
         print(f"\n{C_RED}[!] Force terminating active command and background processes...{C_RESET}")
         if p is not None:
@@ -1331,6 +1345,14 @@ def main():
             stop_event.set()
         if sniffer_thread is not None:
             sniffer_thread.join(timeout=1.5)
+
+        # Close log and compile summary even on force-quit
+        if raw_log_handle:
+            raw_log_handle.close()
+            raw_log_handle = None
+            print(f"{C_GREEN}[+] Raw JSON log written to: {raw_log_path}{C_RESET}")
+        if summary_log_path:
+            compile_and_write_summary()
     finally:
         cleanup()
 
