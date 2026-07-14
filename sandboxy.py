@@ -50,6 +50,10 @@ NS_IP = "10.200.1.2"
 SUBNET_MASK = "255.255.255.0"
 CIDR = "10.200.1.0/24"
 
+HOST_IPv6 = "fd00::1"
+NS_IPv6 = "fd00::2"
+CIDR_v6 = "fd00::/64"
+
 # Global flags for signal cleanup
 cleanup_needed = False
 active_interface = None
@@ -327,20 +331,23 @@ def setup_network(offline=False):
 
     # 4. Set host interface IP and bring it up
     run_cmd(f"ip addr add {HOST_IP}/24 dev {VETH_HOST}")
+    run_cmd(f"ip -6 addr add {HOST_IPv6}/64 dev {VETH_HOST}")
     run_cmd(f"ip link set {VETH_HOST} up")
 
     # 5. Set guest interfaces inside netns up
     run_cmd(f"ip netns exec {NS_NAME} ip link set lo up")
     run_cmd(f"ip netns exec {NS_NAME} ip addr add {NS_IP}/24 dev {VETH_NS}")
+    run_cmd(f"ip netns exec {NS_NAME} ip -6 addr add {NS_IPv6}/64 dev {VETH_NS}")
     run_cmd(f"ip netns exec {NS_NAME} ip link set {VETH_NS} up")
 
     # 6. Add default routing inside netns pointing to host IP
     run_cmd(f"ip netns exec {NS_NAME} ip route add default via {HOST_IP}")
+    run_cmd(f"ip netns exec {NS_NAME} ip -6 route add default via {HOST_IPv6}")
 
     # 7. Configure nameserver for the netns
     os.makedirs(f"/etc/netns/{NS_NAME}", exist_ok=True)
     with open(f"/etc/netns/{NS_NAME}/resolv.conf", "w") as f:
-        f.write("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        f.write("nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\nnameserver 2001:4860:4860::8888\n")
 
     # 8. Setup Internet Access via NAT/iptables if not offline
     if not offline:
@@ -349,10 +356,15 @@ def setup_network(offline=False):
             print(f"{C_BLUE}[*] Routing namespace traffic through internet interface: {active_interface}{C_RESET}")
             # Enable IP forwarding
             run_cmd("sysctl -w net.ipv4.ip_forward=1")
+            run_cmd("sysctl -w net.ipv6.conf.all.forwarding=1")
             # Setup masquerade (both iptables / nftables check)
             run_cmd(f"iptables -t nat -A POSTROUTING -s {CIDR} -o {active_interface} -j MASQUERADE")
             run_cmd(f"iptables -A FORWARD -i {active_interface} -o {VETH_HOST} -m state --state RELATED,ESTABLISHED -j ACCEPT")
             run_cmd(f"iptables -A FORWARD -i {VETH_HOST} -o {active_interface} -j ACCEPT")
+            # Setup IPv6 masquerade
+            run_cmd(f"ip6tables -t nat -A POSTROUTING -s {CIDR_v6} -o {active_interface} -j MASQUERADE")
+            run_cmd(f"ip6tables -A FORWARD -i {active_interface} -o {VETH_HOST} -m state --state RELATED,ESTABLISHED -j ACCEPT")
+            run_cmd(f"ip6tables -A FORWARD -i {VETH_HOST} -o {active_interface} -j ACCEPT")
         else:
             print(f"{C_YELLOW}[!] Warning: No active internet interface detected. Internet access might be unavailable.{C_RESET}")
 
@@ -370,6 +382,10 @@ def cleanup():
         run_cmd(f"iptables -t nat -D POSTROUTING -s {CIDR} -o {active_interface} -j MASQUERADE", check=False)
         run_cmd(f"iptables -D FORWARD -i {active_interface} -o {VETH_HOST} -m state --state RELATED,ESTABLISHED -j ACCEPT", check=False)
         run_cmd(f"iptables -D FORWARD -i {VETH_HOST} -o {active_interface} -j ACCEPT", check=False)
+        # Delete IPv6 MASQUERADE rules
+        run_cmd(f"ip6tables -t nat -D POSTROUTING -s {CIDR_v6} -o {active_interface} -j MASQUERADE", check=False)
+        run_cmd(f"ip6tables -D FORWARD -i {active_interface} -o {VETH_HOST} -m state --state RELATED,ESTABLISHED -j ACCEPT", check=False)
+        run_cmd(f"ip6tables -D FORWARD -i {VETH_HOST} -o {active_interface} -j ACCEPT", check=False)
 
     # 3. Delete netns (this also automatically removes veth_host and veth_ns)
     run_cmd(f"ip netns delete {NS_NAME}", check=False)
@@ -539,21 +555,29 @@ def sniffer_loop(stop_event):
             continue
         eth_header = struct.unpack("!6s6sH", packet[:14])
         eth_proto = eth_header[2]
-        if eth_proto != 0x0800:
-            continue # Only monitor IPv4
-
-        ip_header_start = 14
-        if len(packet) < ip_header_start + 20:
+        if eth_proto == 0x0800:
+            ip_header_start = 14
+            if len(packet) < ip_header_start + 20:
+                continue
+            ip_header = struct.unpack("!BBHHHBBH4s4s", packet[ip_header_start:ip_header_start+20])
+            version_ihl = ip_header[0]
+            ihl = version_ihl & 0x0F
+            iph_length = ihl * 4
+            protocol = ip_header[6]
+            src_ip = socket.inet_ntoa(ip_header[8])
+            dst_ip = socket.inet_ntoa(ip_header[9])
+            payload_offset = ip_header_start + iph_length
+        elif eth_proto == 0x86dd:
+            ip_header_start = 14
+            if len(packet) < ip_header_start + 40:
+                continue
+            ip_header = struct.unpack("!IHBB16s16s", packet[ip_header_start:ip_header_start+40])
+            protocol = ip_header[2]
+            src_ip = socket.inet_ntop(socket.AF_INET6, ip_header[4])
+            dst_ip = socket.inet_ntop(socket.AF_INET6, ip_header[5])
+            payload_offset = ip_header_start + 40
+        else:
             continue
-        ip_header = struct.unpack("!BBHHHBBH4s4s", packet[ip_header_start:ip_header_start+20])
-        version_ihl = ip_header[0]
-        ihl = version_ihl & 0x0F
-        iph_length = ihl * 4
-        protocol = ip_header[6]
-        src_ip = socket.inet_ntoa(ip_header[8])
-        dst_ip = socket.inet_ntoa(ip_header[9])
-
-        payload_offset = ip_header_start + iph_length
 
         if protocol == 17: # UDP
             udp_header_start = payload_offset
