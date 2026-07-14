@@ -1251,9 +1251,11 @@ def main():
             print(f"{C_BOLD}{C_RED}[!] Error opening log file: {e}{C_RESET}")
             sys.exit(1)
 
-    signal.signal(signal.SIGINT, handle_sigint)
     signal.signal(signal.SIGTERM, handle_sigint)
 
+    p = None
+    stop_event = None
+    sniffer_thread = None
     try:
         setup_network(offline=args.offline)
 
@@ -1302,9 +1304,28 @@ def main():
             subprocess.run("stty sane", shell=True)
             time.sleep(1)
 
-        stop_event.set()
-        sniffer_thread.join(timeout=2)
+        if stop_event is not None:
+            stop_event.set()
+        if sniffer_thread is not None:
+            sniffer_thread.join(timeout=2)
 
+    except KeyboardInterrupt:
+        print(f"\n{C_RED}[!] Force terminating active command and background processes...{C_RESET}")
+        if p is not None:
+            try:
+                p.terminate()
+                p.wait()
+            except Exception:
+                pass
+        for pid in get_namespace_pids(NS_NAME):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+        if stop_event is not None:
+            stop_event.set()
+        if sniffer_thread is not None:
+            sniffer_thread.join(timeout=1.5)
     finally:
         cleanup()
 
