@@ -58,6 +58,7 @@ CIDR_v6 = "fd00::/64"
 cleanup_needed = False
 active_interface = None
 offline_mode = False
+show_traffic_cli = False
 
 # Thread safety and statistics for Live Dashboard
 list_lock = threading.Lock()
@@ -139,8 +140,8 @@ def log_event(event_type, source_ip, source_port, dest_ip, dest_port, message, e
             log_data["details"] = extra
         all_raw_events.append(log_data)
 
-    # Print to console ONLY if TUI Live Dashboard is not active to prevent UI corruption
-    if not tui_active:
+    # Print to console ONLY if TUI Live Dashboard is not active and show_traffic_cli is enabled
+    if not tui_active and show_traffic_cli:
         print(console_msg)
         sys.stdout.flush()
 
@@ -1208,11 +1209,13 @@ def main():
     run_parser.add_argument("cmd", type=str, help="The command to execute (e.g., 'curl https://example.com' or 'firefox')")
     run_parser.add_argument("--offline", action="store_true", help="Completely disconnect the namespace from the internet.")
     run_parser.add_argument("--log", type=str, help="JSON log file path to record events.")
+    run_parser.add_argument("--show-traffic", action="store_true", help="Print intercepted network events to console in real-time.")
 
     # Sub-command shell
     shell_parser = subparsers.add_parser("shell", help="Launch an interactive bash session inside the isolated namespace.")
     shell_parser.add_argument("--offline", action="store_true", help="Completely disconnect the namespace from the internet.")
     shell_parser.add_argument("--log", type=str, help="JSON log file path to record events.")
+    shell_parser.add_argument("--show-traffic", action="store_true", help="Print intercepted network events to console in real-time.")
 
     # Sub-command analyze
     analyze_parser = subparsers.add_parser("analyze", help="Analyze and summarize a network log file.")
@@ -1241,7 +1244,9 @@ def main():
 
     check_requirements()
 
-    global raw_log_path, raw_log_handle
+    global raw_log_path, raw_log_handle, show_traffic_cli
+    show_traffic_cli = args.show_traffic
+
     if args.log:
         raw_log_path = args.log
         try:
