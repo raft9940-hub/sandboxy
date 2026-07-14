@@ -1162,6 +1162,19 @@ def show_tui():
         finally:
             cleanup()
 
+def check_requirements():
+    """Verify that required networking utilities are installed."""
+    import shutil
+    required = ["ip", "iptables", "ip6tables"]
+    missing = []
+    for cmd in required:
+        if shutil.which(cmd) is None:
+            missing.append(cmd)
+    if missing:
+        print(f"{C_BOLD}{C_RED}[!] Error: Missing required system utilities: {', '.join(missing)}{C_RESET}")
+        print(f"{C_YELLOW}[*] Please install them via your package manager (e.g. pacman, apt, or dnf) before running Sandboxy.{C_RESET}")
+        sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser(description="Sandboxy: Isolate and monitor application network traffic.")
     subparsers = parser.add_subparsers(dest="command", required=False)
@@ -1188,6 +1201,7 @@ def main():
         if os.getuid() != 0:
             print(f"{C_BOLD}{C_RED}[!] Error: Sandboxy must be run with root privileges (sudo) to launch TUI.{C_RESET}")
             sys.exit(1)
+        check_requirements()
         show_tui()
         sys.exit(0)
 
@@ -1200,6 +1214,8 @@ def main():
     if os.getuid() != 0:
         print(f"{C_BOLD}{C_RED}[!] Error: Sandboxy must be run with root privileges (sudo).{C_RESET}")
         sys.exit(1)
+
+    check_requirements()
 
     global raw_log_path, raw_log_handle
     if args.log:
