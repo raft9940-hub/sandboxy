@@ -864,11 +864,16 @@ def tui_get_input(prompt, default=None):
         prompt_str += ": "
     try:
         val = input(prompt_str).strip()
+        if val.lower() in ("cancel", "\\q"):
+            print("\n[!] Setup cancelled. Returning to main menu...")
+            time.sleep(0.8)
+            return None
         if not val and default is not None:
             return default
         return val
     except (KeyboardInterrupt, EOFError):
-        print("\nOperation cancelled.")
+        print("\n[!] Setup cancelled. Returning to main menu...")
+        time.sleep(0.8)
         return None
 
 def tui_get_bool(prompt, default_val=True):
@@ -934,6 +939,7 @@ def show_tui():
         print(f"  {C_BOLD}{C_WHITE}[3]{C_RESET} Open Interactive Sandbox Shell")
         print(f"  {C_BOLD}{C_WHITE}[4]{C_RESET} Analyze / View Existing Log File")
         print(f"  {C_BOLD}{C_WHITE}[5]{C_RESET} Exit")
+        print(f"  {C_YELLOW}(Tip: You can type 'cancel' at any prompt to return to this menu){C_RESET}")
         print(f"{C_BOLD}{C_CYAN}======================================================================{C_RESET}")
         
         choice = tui_get_input("Choose Option (1-5)", "1")
@@ -948,10 +954,14 @@ def show_tui():
         if choice == "4":
             # Analyze existing log
             log_to_read = tui_get_input("Enter log file path (e.g. run_http.json)")
-            if log_to_read:
-                clear_screen()
-                analyze_log(log_to_read)
-                input(f"{C_BOLD}{C_WHITE}Press Enter to return to menu...{C_RESET}")
+            if log_to_read is None:
+                continue
+            if not log_to_read:
+                input(f"\n{C_RED}[!] Path cannot be empty. Press Enter to retry...{C_RESET}")
+                continue
+            clear_screen()
+            analyze_log(log_to_read)
+            input(f"{C_BOLD}{C_WHITE}Press Enter to return to menu...{C_RESET}")
             continue
 
         # Option 1, 2 or 3: Configuring Sandbox network session
@@ -960,6 +970,8 @@ def show_tui():
         cmd_to_run = None
         if not is_shell:
             cmd_to_run = tui_get_input("Enter command to execute (e.g., 'curl -I http://google.com')")
+            if cmd_to_run is None:
+                continue
             if not cmd_to_run:
                 input(f"\n{C_RED}[!] Command cannot be empty. Press Enter to retry...{C_RESET}")
                 continue
@@ -978,13 +990,19 @@ def show_tui():
         if log_raw is None: continue
         if log_raw:
             raw_log_path = tui_get_input("Raw log filename", "sandboxy_raw.json")
-            if not raw_log_path: continue
+            if raw_log_path is None: continue
+            if not raw_log_path:
+                input(f"\n{C_RED}[!] Path cannot be empty. Press Enter to retry...{C_RESET}")
+                continue
 
         log_summary = tui_get_bool("Enable Analyzed summary JSON logging?", True)
         if log_summary is None: continue
         if log_summary:
             summary_log_path = tui_get_input("Summary report filename", "sandboxy_summary.json")
-            if not summary_log_path: continue
+            if summary_log_path is None: continue
+            if not summary_log_path:
+                input(f"\n{C_RED}[!] Path cannot be empty. Press Enter to retry...{C_RESET}")
+                continue
 
         # App console output logging configuration
         log_app_out = tui_get_bool("Enable Sandboxed App console output logging?", True)
@@ -992,7 +1010,10 @@ def show_tui():
         app_log_path = None
         if log_app_out:
             app_log_path = tui_get_input("App console log filename", "sandbox_output.log")
-            if not app_log_path: continue
+            if app_log_path is None: continue
+            if not app_log_path:
+                input(f"\n{C_RED}[!] Path cannot be empty. Press Enter to retry...{C_RESET}")
+                continue
 
         # Begin Sandbox execution
         reset_stats()
