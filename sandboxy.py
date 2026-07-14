@@ -1178,6 +1178,9 @@ def show_tui():
                 
             input(f"\n{C_BOLD}{C_WHITE}Sandbox Session Complete. Press Enter to return to menu...{C_RESET}")
 
+        except KeyboardInterrupt:
+            print(f"\n{C_YELLOW}[!] Session aborted by user. Returning to main menu...{C_RESET}")
+            time.sleep(1.0)
         except Exception as e:
             input(f"\n{C_RED}[!] Execution Error: {e}. Press Enter to return to menu...{C_RESET}")
         finally:
